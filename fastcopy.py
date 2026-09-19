@@ -30,8 +30,25 @@ class FastCopy:
         self.size_limit = size_limit
         self.thread_num = thread_num
         self.ignore_symlinks = ignore_symlinks
-        self.src_dir = Path(src_dir).absolute()
         self.size = 0
+        self._resolve_dirs(src_dir, dest_dir)
+        file_list, folders, ignore_count = self._collect_files()
+        if ignore_count:
+            print(
+                f"Ignoring {ignore_count} file(s), larger than {sizeof_fmt(size_limit)}")
+        print(f"{len(file_list)} file(s) to copy from {self.src_dir} to {self.dest_dir} with a size of {sizeof_fmt(self.size)}")
+        if sync:
+            file_list = self._sync_destination(file_list, folders)
+
+        self.total_files = len(file_list)
+        if len(file_list) == 0:
+            print('no file to copy')
+            return
+        self.dispatch_workers(file_list)
+
+    def _resolve_dirs(self, src_dir: str, dest_dir: str):
+        """Absolute source and destination, both validated, with the destination created."""
+        self.src_dir = Path(src_dir).absolute()
         if not self.src_dir.exists():
             raise ValueError(
                 'Error: source directory {} does not exist.'.format(self.src_dir))
@@ -39,6 +56,13 @@ class FastCopy:
         if self.src_dir == self.dest_dir:
             raise ValueError("Error: same source and destination directory.")
         self.dest_dir.mkdir(exist_ok=True)
+
+    def _collect_files(self):
+        """Walk the source breadth-first: (files to copy, folders seen, files skipped for size).
+
+        Mirrors each source folder into the destination as it goes, and accumulates self.size,
+        so the copy that follows never has to create a directory.
+        """
         file_list = []
         folders = [self.src_dir]
         ignore_count = 0
@@ -47,7 +71,7 @@ class FastCopy:
             folder: Path = folders[i]
             for path in folder.iterdir():
                 if path.is_symlink():
-                    if not ignore_symlinks:
+                    if not self.ignore_symlinks:
                         file_list.append(path)
                 elif path.is_dir():
                     folders.append(path)
@@ -60,52 +84,50 @@ class FastCopy:
                         self.size += path.stat().st_size
                         file_list.append(path)
             i += 1
-        if ignore_count:
-            print(
-                f"Ignoring {ignore_count} file(s), larger than {sizeof_fmt(size_limit)}")
-        print(f"{len(file_list)} file(s) to copy from {self.src_dir} to {self.dest_dir} with a size of {sizeof_fmt(self.size)}")
-        if sync:
-            dir_delete_count = 0
-            delete_count = 0
-            exist_count = 0
-            print("Syncing files...")
-            file_set = {file.relative_to(self.src_dir) for file in file_list}
-            folder_set = {path.relative_to(self.src_dir) for path in folders}
-            dest_folders = [self.dest_dir]
-            while dest_folders:
-                folder: Path = dest_folders.pop()
-                for path in folder.iterdir():
-                    if path.is_file() or path.is_symlink():
-                        rel_path = path.relative_to(self.dest_dir)
-                        if rel_path not in file_set:
-                            path.unlink()
-                            delete_count += 1
-                        elif not replace:
-                            exist_count += 1
-                            file_set.remove(rel_path)
-                    elif path.is_dir():
-                        if path.relative_to(self.dest_dir) not in folder_set:
-                            dir_delete_count += 1
-                            shutil.rmtree(path)
-                            continue
-                        dest_folders.append(path)
-            if exist_count:
-                print(f"{exist_count} file(s) already exist")
-            if dir_delete_count:
-                print(
-                    f"{dir_delete_count} folder(s) didn't match with the source directory, deleted with it's contents")
-            if delete_count:
-                print(
-                    f"{delete_count} file(s) didn't match with the source directory, deleted")
-            if not replace:
-                file_list = [file for file in file_list if file.relative_to(
-                    self.src_dir) in file_set]
+        return file_list, folders, ignore_count
 
-        self.total_files = len(file_list)
-        if len(file_list) == 0:
-            print('no file to copy')
-            return
-        self.dispatch_workers(file_list)
+    def _sync_destination(self, file_list, folders):
+        """Make the destination match the source, and return the files still left to copy.
+
+        Deletes destination files and folders the source does not have; without --replace, a file
+        that already exists is counted and dropped from the copy list rather than re-copied.
+        """
+        dir_delete_count = 0
+        delete_count = 0
+        exist_count = 0
+        print("Syncing files...")
+        file_set = {file.relative_to(self.src_dir) for file in file_list}
+        folder_set = {path.relative_to(self.src_dir) for path in folders}
+        dest_folders = [self.dest_dir]
+        while dest_folders:
+            folder: Path = dest_folders.pop()
+            for path in folder.iterdir():
+                if path.is_file() or path.is_symlink():
+                    rel_path = path.relative_to(self.dest_dir)
+                    if rel_path not in file_set:
+                        path.unlink()
+                        delete_count += 1
+                    elif not self.replace:
+                        exist_count += 1
+                        file_set.remove(rel_path)
+                elif path.is_dir():
+                    if path.relative_to(self.dest_dir) not in folder_set:
+                        dir_delete_count += 1
+                        shutil.rmtree(path)
+                        continue
+                    dest_folders.append(path)
+        if exist_count:
+            print(f"{exist_count} file(s) already exist")
+        if dir_delete_count:
+            print(
+                f"{dir_delete_count} folder(s) didn't match with the source directory, deleted with it's contents")
+        if delete_count:
+            print(
+                f"{delete_count} file(s) didn't match with the source directory, deleted")
+        if not self.replace:
+            file_list = [file for file in file_list if file.relative_to(
+                self.src_dir) in file_set]
+        return file_list
 
     def single_copy(self):
         while True:
