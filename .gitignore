@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+
+# Generated agent code map (local artifact; rebuild with ~/.claude/tools/codemap.py).
+.claude/codemap/
+
+# This repo is PUBLIC, so agent memories never live in it - they belong in the private
+# claude-memory store under repos/FastColabCopy/. Ignored so one cannot land here by accident.
+/.claude/memory/
